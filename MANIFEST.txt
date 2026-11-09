@@ -1,0 +1,215 @@
+MUSE PI — BUILD MANIFEST
+=========================
+
+BASE IMAGE
+- File:    2025-05-13-raspios-bookworm-arm64.img.xz
+           (Raspberry Pi OS 64-bit WITH DESKTOP, Debian Bookworm,
+           release directory raspios_arm64-2025-05-13)
+- SHA256:  1162c2a47c2ebda34c7ebeafc4afb71910a05b368d0721ae3736928e60ba5047
+           (verified against the publisher's .sha256 before any changes)
+- Boots Pi 3 / 4 / 5.
+
+FINAL ARCHIVE
+- File:    muse-pi-raspios-arm64.img.xz
+- SHA256:  d6a2f496ae4f072fdbd40b24f31699c30f46eb9c8c1dc53c82a896be5d115fa9
+- Size:    1,395,806,828 bytes (1.30 GiB)
+- Uncompressed image size: 6,157,238,272 bytes
+- Build:   produced by build-muse-pi.sh (kept alongside this file;
+           the script is the GitHub repo's build script — readable,
+           commented, parameters at the top). One deviation on this
+           artifact: the final compression used xz -3 instead of the
+           script's -6 because the build VM's shared CPU made -6
+           impractically slow. Compression level changes only the
+           archive size, never the contents — the disk image inside
+           is exactly what the script produced and verified.
+- Method:  no loop mounts (unavailable in the build VM). The FAT boot
+           partition was edited with the script's pyfatfs fallback
+           (src/fatboot.py; mtools is the script's first choice), the
+           ext4 root filesystem with debugfs.
+
+IMAGE-LEVEL CUSTOMIZATIONS (baked in before first boot)
+-------------------------------------------------------
+Boot partition (FAT):
+- "ssh" (empty file) — enables the SSH server.
+- "userconf.txt" — creates user "muse" with a freshly generated
+  random 24-character password (sha512crypt hash only; the plaintext
+  was discarded at build time and is known to no one — SSH login is
+  key-only, and the setup wizard lets the owner set their own
+  password).
+- "firstrun.sh" — the two-phase first-boot setup described below.
+- "cmdline.txt" — original kernel line preserved verbatim, with these
+  parameters appended:
+    systemd.run=/boot/firstrun.sh
+    systemd.run_success_action=reboot
+    systemd.unit=kernel-command-line.target
+- "config.txt" — headless desktop guarantee appended:
+    hdmi_force_hotplug=1
+    hdmi_group=1
+    hdmi_mode=16
+  (the desktop renders at 1920x1080 even with no monitor attached,
+  so remote screen control always has a full-size screen)
+
+Root filesystem (ext4):
+- /etc/hostname — "muse-pi"
+- /etc/hosts — entry "127.0.1.1 muse-pi"
+- /etc/ssh/sshd_config.d/60-muse-harden.conf — key-only SSH from the
+  very start, before any first-boot script runs:
+    PasswordAuthentication no
+    PermitRootLogin no
+    KbdInteractiveAuthentication no
+    PubkeyAuthentication yes
+- /usr/local/muse-pi/wizard/ — the setup wizard (below):
+  wizard.py (mode 755) and open-wizard.sh (mode 755)
+- /usr/local/muse-pi/extras/ — the four optional-extra installers
+  (below), each a separate readable shell script, mode 755
+- /usr/local/muse-pi/state/ — wizard/firstrun state flags live here
+- /etc/systemd/system/muse-pi-wizard.service — runs the wizard web
+  page on 127.0.0.1:8977 (enabled by firstrun phase 1; the wizard
+  disables it when setup is finished)
+- /etc/skel/.config/autostart/muse-pi-setup.desktop — opens the
+  wizard on the desktop at login while setup is pending
+- /etc/skel/Desktop/Muse-Pi-Setup.desktop — desktop icon to re-open
+  the wizard at any time
+
+FIRST BOOT — PHASE 1 (firstrun.sh via systemd.run; local, no network)
+---------------------------------------------------------------------
+- User "muse": added to groups sudo, adm, video, gpio, i2c, spi.
+- Advanced key path: if a file named "authorized_keys" exists on the
+  boot partition, it is installed as the user's ~/.ssh/authorized_keys
+  (mode 600) and the wizard's key step shows as already done.
+- The sshd hardening drop-in is rewritten (belt and braces with the
+  baked-in copy). No sysctl forwarding is touched — that is an extra.
+- Hostname set to muse-pi (raspi-config + direct file writes).
+- Desktop behaviour:
+  * Boot to desktop with autologin (raspi-config do_boot_behaviour B4)
+  * X11 session instead of Wayland (raspi-config do_wayland 1, i.e.
+    lightdm user-session/autologin-session = LXDE-pi-x)
+  * Screen blanking disabled (raspi-config do_blanking 1, plus
+    /etc/X11/xorg.conf.d/10-noblank.conf with DPMS timings zeroed)
+- The setup wizard service is enabled and setup is marked pending
+  (so the wizard opens itself on the desktop); shipped script
+  permissions are re-asserted; the desktop icon is made executable.
+- Installs the oneshot service "muse-setup.service"
+  (TimeoutStartSec=infinity), strips the systemd.run parameters from
+  cmdline.txt, deletes the boot copy of firstrun.sh, and reboots.
+
+FIRST BOOT — PHASE 2 (muse-setup.service; runs once, then disables
+itself and reboots)
+---------------------------------------------------------------------
+Every step is individually guarded: a failed download is logged as a
+WARNING in /var/log/muse-firstrun.log and setup continues.
+
+Packages (apt, Debian Bookworm repositories) — inert tools only,
+nothing here runs as a service:
+- xdotool, scrot, wmctrl, x11vnc — screen/keyboard/mouse control
+  tools (used over SSH against the X11 desktop; x11vnc is started
+  on demand only, never left listening)
+- fswebcam — webcam snapshots (tool)
+- wakeonlan, etherwake — Wake-on-LAN packet senders (tools)
+- rclone — cloud/remote file transfer (tool)
+- ffmpeg — audio/video conversion (tool)
+- yt-dlp — media fetching (tool; the Bookworm apt build)
+
+Installed via official script:
+- tailscale — BOOT STATE: INSTALLED ONLY. The client is installed but
+  NOT joined to any tailnet; the owner joins from the setup wizard.
+
+SETUP WIZARD (the one custom piece)
+-----------------------------------
+A local web page (Python 3 standard library only) served on
+127.0.0.1:8977 by muse-pi-wizard.service, running as root because
+setup tasks need root; it is reachable only from the Pi itself. It
+autostarts in the desktop browser at first login (via the skel
+autostart entry) while /usr/local/muse-pi/state/setup-pending
+exists, and there is a "Muse Pi Setup" desktop icon to re-open it.
+
+Steps, in plain language:
+1. "Give your Muse the keys" — a paste box for the owner's Muse
+   SSH public key (written to ~/.ssh/authorized_keys, mode 600) and
+   a field to set the owner's own password for the "muse" account
+   (via chpasswd; replaces the throwaway build password). If firstrun
+   already installed a boot-partition authorized_keys, this step
+   shows as done.
+2. "Connect Tailscale (recommended)" — a button that runs
+   "tailscale up --hostname muse-pi" and displays the authorization
+   URL for the owner to approve on their own Tailscale account.
+3. "Optional extras" — checkboxes with one-line plain descriptions
+   and per-extra install buttons with live log output (below).
+4. "Done" — shows the Pi's LAN address and hostname and the sentence
+   to tell their Muse ("the Pi is ready"), removes the
+   setup-pending flag, and disables+stops the wizard service.
+
+OPTIONAL EXTRAS (never preinstalled; wizard-only, one click each)
+-----------------------------------------------------------------
+Each is a separate script in /usr/local/muse-pi/extras/ so every
+action is auditable before it runs.
+- uptime-kuma.sh — installs Docker (apt docker.io, service enabled)
+  and runs Uptime Kuma (louislam/uptime-kuma:1) with restart policy
+  "unless-stopped", data in ~/uptime-kuma. Port: 3001 (web).
+  BOOT STATE after install: AUTO-START.
+- pihole.sh — official Pi-hole unattended installer with
+  DHCP_ACTIVE=false (DHCP server OFF). Ports: 53 (DNS, served by
+  the Pi only) and 80 (admin web). BOOT STATE after install:
+  AUTO-START on the Pi. It answers DNS only for clients pointed at
+  it; the wizard text says so plainly. Its web admin password is
+  generated by the installer and shown in the install log.
+- syncthing.sh — apt syncthing, enabled as a user service for
+  "muse" with linger on (system template instance as fallback).
+  Ports: 8384 (web GUI), 22000 (sync). BOOT STATE after install:
+  AUTO-START.
+- subnet-router.sh — writes /etc/sysctl.d/99-tailscale-router.conf
+  (net.ipv4.ip_forward=1, net.ipv6.conf.all.forwarding=1) and
+  applies it. It advertises NO route: the owner must still run
+  "tailscale up --advertise-routes=..." and approve the route in
+  their own Tailscale admin console; the script prints exactly that.
+
+SECURITY NOTES
+--------------
+- No SSH keys are baked into this image — none at all. SSH keys
+  arrive only through the wizard's paste box or the owner's own
+  boot-partition authorized_keys file.
+- No credentials are baked in. The only build-time secret was the
+  throwaway random user password, discarded immediately.
+- No personal identifiers: this image and all its text files were
+  grepped clean for the private build's names/keys before release
+  (see verification notes).
+- SSH is key-only from the start (password logins disabled in the
+  baked-in sshd drop-in, before any first-boot script runs).
+- Tailscale is never joined automatically; no auth keys anywhere.
+  No service is preinstalled beyond the stock image's own: no
+  Docker, Pi-hole, Uptime Kuma, Syncthing or Home Assistant — those
+  exist only as wizard extras the owner chooses.
+- The wizard binds 127.0.0.1 only and disables itself at "Done".
+
+VERIFICATION PERFORMED (on the finished .img.xz)
+-------------------------------------------------
+- Re-opened the finished archive; decompressed size is exactly the
+  base image's 6,157,238,272 bytes; partition table unchanged.
+- Boot partition: ssh, userconf.txt (user "muse", $6$ hash),
+  firstrun.sh, cmdline.txt (original line + the three systemd.run
+  parameters), config.txt headless lines — all read back and checked.
+- Root filesystem: /etc/hostname = muse-pi; /etc/hosts entry; sshd
+  drop-in contents; wizard, extras and state directories; wizard
+  systemd unit; skel autostart entry and desktop icon — all read
+  back and checked. Script modes are 755 where they must be.
+- Every shipped script was syntax-checked twice: the sources
+  (bash -n / python3 -m py_compile) and the copies dumped back out
+  of the finished image. No @HOSTNAME@/@USERNAME@ placeholders
+  remain in the shipped files.
+- e2fsck -fn on the finished root filesystem: clean (all 5 passes).
+- Identifier grep over every customized file in the image and every
+  deliverable text file: clean.
+
+WHAT ONLY A REAL FIRST BOOT CAN PROVE
+-------------------------------------
+Headless testing can verify files, syntax and filesystem integrity;
+it cannot prove runtime behaviour. Unproven until someone boots it:
+raspi-config's noninteractive desktop switches on this exact image,
+the phase-1 → phase-2 service handoff and reboot cycle, apt package
+availability at first-boot time, the Tailscale install script, the
+wizard's live interactions (key paste, password change, tailscale
+up URL capture, extras installs), and the extras' own installers
+(Docker/Pi-hole downloads). The design mirrors a sibling build whose
+identical two-phase firstrun pattern was used for the same base
+image, and every network step is guarded so a failure is logged,
+never fatal — but the honest status is: first boot is the real test.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Muse Pi Setup
+Comment=Finish setting up your Muse Pi
+Exec=/usr/local/muse-pi/wizard/open-wizard.sh --if-pending
+Icon=system-run
+Terminal=false
+X-GNOME-Autostart-enabled=true

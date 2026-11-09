@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Muse Pi Setup
+Comment=Open the Muse Pi setup wizard
+Exec=/usr/local/muse-pi/wizard/open-wizard.sh
+Icon=system-run
+Terminal=false
